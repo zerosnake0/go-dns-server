@@ -1,0 +1,10 @@
+.idea
+.git*
+.dockerignore
+
+bin
+
+docker-compose.yaml
+
+Makefile
+Dockerfile
