@@ -1,0 +1,4 @@
+bind: :53
+addr: 127.0.1.1:53
+records:
+  localhost.: 127.0.0.1

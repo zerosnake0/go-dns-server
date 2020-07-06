@@ -4,23 +4,32 @@ import (
 	"flag"
 	"log"
 	"net"
+	"os"
+	"sync"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/miekg/dns"
+	"gopkg.in/yaml.v2"
 )
 
-var domainsToAddresses = map[string]string{
-	"tr240.": "172.18.188.240",
+type config struct {
+	Bind    string            `yaml:"bind"`
+	Addr    string            `yaml:"addr"`
+	Records map[string]string `yaml:"records"`
 }
 
 var (
-	bind      string
+	cfgFile   string
+	mu        sync.RWMutex
+	cfg       config
 	dnsClient dns.Client
-	dnsAddr   string
 )
 
 type handler struct{}
 
 func (this *handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	mu.RLock()
+	defer mu.RUnlock()
 	log.Println("serving request...")
 	msg := dns.Msg{}
 
@@ -29,7 +38,7 @@ func (this *handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	case dns.TypeA:
 		domain := q.Name
 		log.Println("domain", domain)
-		address, ok := domainsToAddresses[domain]
+		address, ok := cfg.Records[domain]
 		if ok {
 			msg.SetReply(r)
 			msg.Authoritative = true
@@ -40,12 +49,12 @@ func (this *handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 	if !msg.Authoritative {
-		log.Println("alternative", dnsAddr)
-		if dnsAddr == "" {
+		log.Println("alternative", cfg.Addr)
+		if cfg.Addr == "" {
 			msg.SetRcode(&msg, dns.RcodeServerFailure)
 		} else {
 			r2 := r.Copy()
-			m2, _, err := dnsClient.Exchange(r2, dnsAddr)
+			m2, _, err := dnsClient.Exchange(r2, cfg.Addr)
 			if err != nil {
 				msg.SetRcode(&msg, dns.RcodeServerFailure)
 			} else {
@@ -56,13 +65,68 @@ func (this *handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(&msg)
 }
 
-func main() {
-	flag.StringVar(&bind, "bind", ":53", "bind addr")
-	flag.StringVar(&dnsAddr, "addr", "", "backup dns addr")
-	flag.Parse()
+func loadConfig() (cfg config, err error) {
+	fp, err := os.Open(cfgFile)
+	if err != nil {
+		return
+	}
+	defer fp.Close()
+	dec := yaml.NewDecoder(fp)
+	dec.SetStrict(true)
+	err = dec.Decode(&cfg)
+	return
+}
 
-	srv := &dns.Server{Addr: bind, Net: "udp"}
+func init() {
+	flag.StringVar(&cfgFile, "config", "config.yaml", "config file")
+	flag.Parse()
+	var err error
+	cfg, err = loadConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Fatal(err)
+	}
+	go func() {
+		defer watcher.Close()
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				log.Println("watcher event:", event)
+				if event.Op&fsnotify.Write == fsnotify.Write {
+					log.Println("config modified:", event.Name)
+					newCfg, err := loadConfig()
+					if err != nil {
+						log.Println("unabled to reload config", err)
+						continue
+					}
+					mu.Lock()
+					cfg = newCfg
+					mu.Unlock()
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Println("watcher error:", err)
+			}
+		}
+	}()
+	err = watcher.Add(cfgFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func main() {
+	srv := &dns.Server{Addr: cfg.Bind, Net: "udp"}
 	srv.Handler = &handler{}
+	log.Println("listening...")
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("Failed to set udp listener %s\n", err.Error())
 	}

@@ -3,12 +3,13 @@ services:
   dns:
     image: dns:latest
     command:
-      - --addr
-      - 172.18.178.253:53
+      - --config
+      - /app/config.yaml
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
     networks:
       dns:
         ipv4_address: 10.5.0.5
-
 
 networks:
   dns:
