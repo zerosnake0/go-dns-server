@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
@@ -13,9 +14,10 @@ import (
 )
 
 type config struct {
-	Bind    string            `yaml:"bind"`
-	Addr    string            `yaml:"addr"`
-	Records map[string]string `yaml:"records"`
+	Bind     string            `yaml:"bind"`
+	Addr     string            `yaml:"addr"`
+	Records  map[string]string `yaml:"records"`
+	WildCard map[string]string `yaml:"wildcard"`
 }
 
 var (
@@ -26,6 +28,25 @@ var (
 )
 
 type handler struct{}
+
+func (this *handler) findDomainAddr(domain string) (string, bool) {
+	address, ok := cfg.Records[domain]
+	if ok {
+		return address, ok
+	}
+	for domain != "" {
+		address, ok := cfg.WildCard[domain]
+		if ok {
+			return address, ok
+		}
+		i := strings.IndexByte(domain, '.')
+		if i < 0 {
+			break
+		}
+		domain = domain[i+1:]
+	}
+	return "", false
+}
 
 func (this *handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	mu.RLock()
@@ -38,7 +59,7 @@ func (this *handler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	case dns.TypeA:
 		domain := q.Name
 		log.Println("domain", domain)
-		address, ok := cfg.Records[domain]
+		address, ok := this.findDomainAddr(domain)
 		if ok {
 			msg.SetReply(r)
 			msg.Authoritative = true
